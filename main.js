@@ -547,12 +547,9 @@
     // Points des doigts (4, 8, 12, 16, 20) et articulations principales (5, 9, 13, 17)
     const keyPoints = [0, 4, 5, 8, 9, 12, 13, 16, 17, 20];
     
-    // ===== AJOUT: Création du graphique de somme des PSD =====
-    // Préparation des données pour la somme des PSD
-    const aggregatedData = {
-      freqs: [],
-      psd: []
-    };
+    // ===== AJOUT: Création du graphique de somme des PSD avec contributions individuelles =====
+    // Structure pour stocker les PSD des points clés
+    const nodeData = [];
 
     // Première passe: collecter toutes les fréquences uniques
     const allFreqs = new Set();
@@ -565,96 +562,190 @@
     });
 
     // Convertir en tableau trié
-    aggregatedData.freqs = Array.from(allFreqs).sort((a, b) => a - b);
-    aggregatedData.psd = new Array(aggregatedData.freqs.length).fill(0);
+    const freqArray = Array.from(allFreqs).sort((a, b) => a - b);
+    const filteredFreqs = freqArray.filter(f => f >= MIN_HZ && f <= MAX_HZ);
 
-    // Deuxième passe: sommer les PSD
+    // Deuxième passe: calculer les PSD individuelles et les puissances totales
     keyPoints.forEach((pointIdx) => {
       if (v2Series[pointIdx] && v2Series[pointIdx].length >= 32) {
         const cleaned = detrend(v2Series[pointIdx]);
         const { freqs, psd } = welchPSD(cleaned, fs);
         
-        // Pour chaque fréquence du spectre agrégé
-        aggregatedData.freqs.forEach((freq, i) => {
+        // Créer un tableau pour stocker les valeurs de PSD pour chaque fréquence commune
+        const nodePSD = new Array(filteredFreqs.length).fill(0);
+        
+        // Calculer la puissance totale dans la fenêtre 1-12 Hz
+        let totalPower = 0;
+        
+        // Pour chaque fréquence du spectre filtré
+        filteredFreqs.forEach((freq, i) => {
           // Trouver l'index le plus proche dans le spectre du point actuel
           const closestIdx = freqs.reduce((closest, f, idx) => {
             return Math.abs(f - freq) < Math.abs(freqs[closest] - freq) ? idx : closest;
           }, 0);
           
-          // Additionner la valeur PSD
-          aggregatedData.psd[i] += psd[closestIdx]; // Valeurs déjà positives grâce à la FFT
+          // Stocker la valeur PSD
+          nodePSD[i] = psd[closestIdx];
+          
+          // Ajouter à la puissance totale
+          totalPower += psd[closestIdx];
+        });
+        
+        // Nommer le nœud selon la convention MediaPipe
+        let pointName;
+        if (pointIdx === 0) pointName = "Poignet";
+        else if (pointIdx === 4) pointName = "Pouce";
+        else if (pointIdx === 8) pointName = "Index";
+        else if (pointIdx === 12) pointName = "Majeur";
+        else if (pointIdx === 16) pointName = "Annulaire";
+        else if (pointIdx === 20) pointName = "Auriculaire";
+        else if (pointIdx === 5) pointName = "Base I";
+        else if (pointIdx === 9) pointName = "Base M";
+        else if (pointIdx === 13) pointName = "Base A";
+        else if (pointIdx === 17) pointName = "Base Au";
+        else pointName = `Point ${pointIdx}`;
+        
+        // Stocker les données
+        nodeData.push({
+          index: pointIdx,
+          name: pointName,
+          psd: nodePSD,
+          totalPower: totalPower
         });
       }
     });
 
-    // Filtrer pour la bande d'intérêt et dessiner le graphique de somme
-    if (aggregatedData.freqs.length > 0) {
-      // Filtrer pour la bande d'intérêt MIN_HZ à MAX_HZ
-      const filteredData = aggregatedData.freqs.map((f, i) => ({ 
-        f, 
-        m: aggregatedData.psd[i]
-      })).filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
+    // Trier les nœuds par puissance totale décroissante
+    nodeData.sort((a, b) => b.totalPower - a.totalPower);
+
+    // Créer le graphique de la somme (pleine largeur)
+    const sumChartDiv = document.createElement('div');
+    sumChartDiv.style.gridColumn = '1 / -1';
+    sumChartDiv.style.marginBottom = '20px';
+
+    const sumCanvas = document.createElement('canvas');
+    sumCanvas.className = 'chart sumChart';
+    sumChartDiv.appendChild(sumCanvas);
+    chartsDiv.appendChild(sumChartDiv);
+
+    // Préparer les datasets pour le graphique
+    const datasets = nodeData.map((node, idx) => {
+      // Générer une couleur basée sur la position dans le tableau
+      const hue = (idx * 360 / nodeData.length) % 360;
+      return {
+        label: `${Math.round(node.totalPower)} - ${node.name}`,
+        data: node.psd,
+        backgroundColor: `hsla(${hue}, 70%, 50%, 0.6)`,
+        borderColor: `hsla(${hue}, 70%, 40%, 0.8)`,
+        borderWidth: 1,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3
+      };
+    });
+
+    // Créer le graphique avec Chart.js
+    new Chart(sumCanvas, {
+      type: 'line', // On utilise line avec fill:true pour avoir des aires
+      data: {
+        labels: filteredFreqs.map(f => f.toFixed(1)),
+        datasets: datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            title: {
+              display: true,
+              text: 'Fréquence (Hz)'
+            },
+            ticks: {
+              maxTicksLimit: 10
+            }
+          },
+          y: {
+            beginAtZero: true,
+            min: 0,
+            title: {
+              display: true,
+              text: 'Amplitude'
+            },
+            stacked: false // Pas d'empilement pour voir les contributions individuelles
+          }
+        },
+        plugins: {
+          legend: {
+            display: true,
+            position: 'top',
+            labels: {
+              // Callback personnalisé pour les étiquettes de légende
+              generateLabels: function(chart) {
+                const datasets = chart.data.datasets;
+                return datasets.map((dataset, i) => {
+                  return {
+                    text: dataset.label,
+                    fillStyle: dataset.backgroundColor,
+                    strokeStyle: dataset.borderColor,
+                    lineWidth: dataset.borderWidth,
+                    hidden: !chart.isDatasetVisible(i),
+                    index: i
+                  };
+                });
+              }
+            }
+          },
+          title: {
+            display: true,
+            text: 'Analyse spectrale des tremblements - Contributions par point',
+            font: {
+              size: 16
+            }
+          },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              title: (items) => `${items[0].label} Hz`,
+              label: (item) => `${item.dataset.label.split(' - ')[1]}: ${item.raw.toFixed(5)}`
+            }
+          }
+        },
+        animation: {
+          duration: 500
+        }
+      }
+    });
+
+    // Si nous avons des données, trouver le pic principal global pour l'information récapitulative
+    if (nodeData.length > 0) {
+      // Calculer la PSD totale à chaque fréquence
+      const totalPSD = new Array(filteredFreqs.length).fill(0);
+      nodeData.forEach(node => {
+        node.psd.forEach((val, i) => {
+          totalPSD[i] += val;
+        });
+      });
       
       // Trouver le pic principal
-      if (filteredData.length > 0) {
-        const peak = filteredData.reduce((a, b) => (b.m > a.m ? b : a), { f: 0, m: 0 });
-        
-        console.log(`Somme des PSD: pic principal à ${peak.f.toFixed(2)} Hz avec amplitude ${peak.m.toFixed(4)}`);
-        
-        // Créer le graphique de la somme (pleine largeur)
-        const sumChartDiv = document.createElement('div');
-        sumChartDiv.style.gridColumn = '1 / -1';
-        sumChartDiv.style.marginBottom = '20px';
-        
-        const sumCanvas = document.createElement('canvas');
-        sumCanvas.className = 'chart sumChart';
-        sumChartDiv.appendChild(sumCanvas);
-        chartsDiv.appendChild(sumChartDiv);
-        
-        new Chart(sumCanvas, {
-          type: 'line',
-          data: { 
-            labels: filteredData.map(p => p.f.toFixed(1)), 
-            datasets: [{ 
-              label: 'Somme des PSD (tous points clés)', 
-              data: filteredData.map(p => p.m), 
-              borderColor: '#ff5500',
-              backgroundColor: 'rgba(255, 85, 0, 0.15)',
-              borderWidth: 3,
-              pointRadius: 0,
-              tension: 0.3,
-              fill: true
-            }] 
-          },
-          options: { 
-            scales: { 
-              x: { 
-                title: { display: true, text: 'Fréquence (Hz)' },
-                ticks: { maxTicksLimit: 10 }
-              }, 
-              y: { 
-                beginAtZero: true,
-                min: 0, // Garantir que l'axe commence à 0
-                title: { display: true, text: 'Amplitude cumulée' }
-              } 
-            },
-            plugins: { 
-              legend: { display: true, position: 'top' },
-              title: {
-                display: true,
-                text: `Analyse spectrale globale - Pic principal: ${peak.f.toFixed(2)} Hz`,
-                font: { size: 16 }
-              },
-              tooltip: {
-                callbacks: {
-                  title: (items) => `${items[0].label} Hz`,
-                  label: (item) => `Amplitude: ${item.raw.toFixed(5)}`
-                }
-              }
-            },
-            animation: { duration: 500 }
-          }
-        });
+      let maxVal = 0;
+      let maxIdx = 0;
+      totalPSD.forEach((val, i) => {
+        if (val > maxVal) {
+          maxVal = val;
+          maxIdx = i;
+        }
+      });
+      
+      const peakFreq = filteredFreqs[maxIdx];
+      console.log(`Somme des PSD: pic principal à ${peakFreq.toFixed(2)} Hz avec amplitude ${maxVal.toFixed(4)}`);
+      
+      // Ajouter cette information au titre du graphique
+      const chartInstance = Chart.getChart(sumCanvas);
+      if (chartInstance) {
+        chartInstance.options.plugins.title.text = 
+          `Analyse spectrale des tremblements - Pic principal: ${peakFreq.toFixed(2)} Hz`;
+        chartInstance.update();
       }
     }
     // ===== FIN AJOUT =====
@@ -681,21 +772,6 @@
         if (peak.m > 0.1) {
           peakFreqs.push(peak.f.toFixed(2));
           peakAmps.push(peak.m.toFixed(4));
-          
-          // Nommer le point selon la convention MediaPipe
-          let pointName;
-          if (pointIdx === 0) pointName = "Poignet";
-          else if (pointIdx === 4) pointName = "Pouce";
-          else if (pointIdx === 8) pointName = "Index";
-          else if (pointIdx === 12) pointName = "Majeur";
-          else if (pointIdx === 16) pointName = "Annulaire";
-          else if (pointIdx === 20) pointName = "Auriculaire";
-          else pointName = `Point ${pointIdx}`;
-          
-          console.log(`${pointName}: pic à ${peak.f.toFixed(2)} Hz avec amplitude ${peak.m.toFixed(4)}`);
-          
-          // Dessiner le graphique
-          drawChart(pointName, freqs, psd);
         }
       } else {
         console.warn(`Aucune donnée valide pour la série ${pointIdx}`);
