@@ -24,19 +24,11 @@
   let lastPos    = Array(NODE_COUNT).fill(null);
   let currentLandmarks = null;
   let camera = null;
+  let handDetected = false;
 
   // === Configuration MediaPipe Hands ===
-  const hands = new Hands({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-  });
-
-  hands.setOptions({
-    maxNumHands: 1,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.5,
-    minTrackingConfidence: 0.5
-  });
-
+  let hands;
+  
   // ---------- 1. Caméra et MediaPipe ----------
   async function initCamera() {
     if (!location.protocol.startsWith('https') && location.hostname !== 'localhost') {
@@ -45,12 +37,33 @@
     }
 
     try {
+      // Vérifier que les bibliothèques nécessaires sont disponibles
+      if (typeof Hands === 'undefined' || typeof Camera === 'undefined' || typeof drawConnectors === 'undefined') {
+        console.error("Bibliothèques MediaPipe non chargées");
+        statusP.textContent = "Erreur: Bibliothèques MediaPipe non chargées. Actualisez la page.";
+        return;
+      }
+
+      hands = new Hands({
+        locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }
+      });
+      
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
       hands.onResults(onHandResults);
 
-      // Initialiser Camera Utils de MediaPipe pour une gestion simplifiée
+      // Initialiser la caméra
+      console.log("Initialisation de la caméra...");
       camera = new Camera(video, {
         onFrame: async () => {
-          await hands.send({image: video});
+          if (hands) await hands.send({image: video});
         },
         width: 640,
         height: 480
@@ -63,6 +76,7 @@
       };
 
       await camera.start();
+      console.log("Caméra démarrée avec succès");
       statusP.textContent = 'Placez votre main dans le cercle et restez immobile';
       startBtn.disabled = false;
     } catch (e) {
@@ -82,17 +96,23 @@
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       // Stocker les landmarks pour le traitement pendant l'enregistrement
       currentLandmarks = results.multiHandLandmarks[0];
+      handDetected = true;
       
       // Dessiner la main détectée
       drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
       drawLandmarks(octx, currentLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
       
       // Si l'enregistrement est en cours, traiter les données
-      if (recording && currentLandmarks) {
+      if (recording) {
         processHandData();
+      } else if (startBtn.disabled) {
+        // Si le bouton est désactivé mais qu'on n'enregistre pas, l'activer
+        startBtn.disabled = false;
       }
     } else {
       currentLandmarks = null;
+      handDetected = false;
+      
       if (recording) {
         statusP.textContent = 'Main non détectée! Replacez votre main dans le cercle';
       }
@@ -104,6 +124,11 @@
     if (!currentLandmarks) return;
     
     const now = Date.now();
+    
+    // Si c'est le premier frame, initialiser le temps de départ
+    if (timeStamps.length === 0) {
+      console.log("Premier frame d'enregistrement capturé");
+    }
     
     currentLandmarks.forEach((landmark, idx) => {
       // Convertir les coordonnées normalisées [0-1] en pixels
@@ -128,8 +153,11 @@
     
     timeStamps.push(now);
     
-    // Vérifier si nous avons atteint la durée d'enregistrement
+    // Afficher la progression
     const elapsed = (now - timeStamps[0]) / 1000;
+    statusP.textContent = `Enregistrement en cours... ${Math.round(elapsed)}/${SAMPLE_SECONDS}s`;
+    
+    // Vérifier si nous avons atteint la durée d'enregistrement
     if (elapsed >= SAMPLE_SECONDS) {
       stopRecording();
     }
@@ -147,6 +175,7 @@
 
   // ---------- 3. Enregistrement ----------
   function startRecording() {
+    console.log("Démarrage de l'enregistrement...");
     v2Series = Array(NODE_COUNT).fill().map(() => []);
     lastPos = Array(NODE_COUNT).fill(null);
     timeStamps = [];
@@ -155,6 +184,7 @@
   }
 
   function stopRecording() {
+    console.log("Arrêt de l'enregistrement...");
     recording = false;
     statusP.textContent = 'Analyse des données...';
     
@@ -437,9 +467,12 @@
 
   // ---------- 5. Analyse ----------
   function analyse() {
+    console.log("Démarrage de l'analyse...");
+    
     // Vérifier si nous avons suffisamment de données
     if (timeStamps.length < 10) {
-      statusP.textContent = "Pas assez de données pour l'analyse";
+      statusP.textContent = "Pas assez de données pour l'analyse. Essayez à nouveau.";
+      startBtn.disabled = false;
       return;
     }
     
@@ -580,21 +613,28 @@
 
   // ---------- 7. UI ----------
   startBtn.addEventListener('click', () => {
-    if (!currentLandmarks) {
+    console.log("Bouton démarrer cliqué");
+    
+    // Ne vérifier l'existence de la main que si c'est la première fois
+    if (!handDetected && !currentLandmarks) {
+      console.log("Aucune main détectée");
       statusP.textContent = 'Aucune main détectée. Placez votre main dans le cercle.';
       return;
     }
+    
     startBtn.disabled = true; 
     resultsSec.hidden = true; 
     startRecording();
   });
   
   restartBtn.addEventListener('click', () => {
+    console.log("Bouton redémarrer cliqué");
     startBtn.disabled = false; 
     resultsSec.hidden = true; 
     statusP.textContent = 'Prêt ! Placez votre main dans le cercle.';
   });
 
   // Démarrer l'application
+  console.log("Démarrage de l'application...");
   initCamera();
 })();
