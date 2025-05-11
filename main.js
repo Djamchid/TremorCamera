@@ -13,10 +13,9 @@
   const chartsDiv = document.getElementById('charts');
   const summaryP = document.getElementById('summary');
 
-  let recording = false, frames = [], timeStamps = [], charts = [];
-  let offCanvas, offCtx;
+  let recording = false, frames = [], timeStamps = [];
 
-  // --- 1. Init Camera
+  // ---------- Camera ----------
   async function initCamera () {
     if (!location.protocol.startsWith('https') && location.hostname !== 'localhost') {
       statusP.textContent = '⚠️ HTTPS requis pour la caméra';
@@ -28,11 +27,6 @@
       video.onloadedmetadata = () => {
         overlay.width = video.videoWidth;
         overlay.height = video.videoHeight;
-        offCanvas = document.createElement('canvas');
-        offCanvas.width = video.videoWidth;
-        offCanvas.height = video.videoHeight;
-        // Le contexte d’étude lit souvent les pixels ; on signale l’usage intensif :
-        offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
         drawGuide();
       };
       video.oncanplay = () => {
@@ -44,7 +38,7 @@
     }
   }
 
-  // --- 2. Guide overlay
+  // ---------- Overlay ----------
   function drawGuide () {
     const { width, height } = overlay;
     octx.clearRect(0, 0, width, height);
@@ -59,20 +53,23 @@
     const { width, height } = overlay;
     const r = Math.min(width, height) * 0.35;
     return [...Array(NODE_COUNT).keys()].map(i => {
-      const angle = (i * 360 / NODE_COUNT) * Math.PI / 180;
-      return [width / 2 + r * Math.cos(angle), height / 2 + r * Math.sin(angle)];
+      const a = (i * 360 / NODE_COUNT) * Math.PI / 180;
+      return [width / 2 + r * Math.cos(a), height / 2 + r * Math.sin(a)];
     });
   }
 
-  // --- 3. Recording loop
+  // ---------- Capture ----------
   function startRecording () {
     frames = Array.from({ length: NODE_COUNT }, () => []);
     timeStamps = [];
     recording = true;
     statusP.textContent = 'Enregistrement…';
+    const off = document.createElement('canvas');
+    off.width = video.videoWidth; off.height = video.videoHeight;
+    const ictx = off.getContext('2d', { willReadFrequently: true });
     const t0 = performance.now();
 
-    const loop = () => {
+    (function loop () {
       if (!recording) return;
       const t = (performance.now() - t0) / 1000;
       if (t >= SAMPLE_SECONDS) {
@@ -81,48 +78,66 @@
         analyse();
         return;
       }
-      captureFrame();
+      ictx.drawImage(video, 0, 0);
+      const nodes = sampleNodes();
+      const ts = Date.now();
+      nodes.forEach((pt, idx) => {
+        const [x, y] = pt.map(Math.floor);
+        const d = ictx.getImageData(x, y, 1, 1).data;
+        const lum = 0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2];
+        frames[idx].push(lum);
+      });
+      timeStamps.push(ts);
       requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
+    })();
   }
 
-  function captureFrame () {
-    offCtx.drawImage(video, 0, 0, offCanvas.width, offCanvas.height);
-    const nodes = sampleNodes();
-    const ts = Date.now();
-    nodes.forEach((pt, idx) => {
-      const [x, y] = pt.map(Math.floor);
-      const { data } = offCtx.getImageData(x, y, 1, 1);
-      const lum = 0.2126 * data[0] + 0.7152 * data[1] + 0.0722 * data[2];
-      frames[idx].push(lum);
-    });
-    timeStamps.push(ts);
+  // ---------- FFT helpers ----------
+  function simpleFFT (buffer) {
+    // Cooley‑Tukey radix‑2, recursive (for educational purposes, N must be power‑of‑2)
+    const N = buffer.length;
+    if (N <= 1) return [buffer];
+    const even = simpleFFT(buffer.filter((_, i) => !(i & 1))).map(x => ({ re: x[0], im: x[1] }));
+    const odd  = simpleFFT(buffer.filter((_, i) => i & 1)).map(x => ({ re: x[0], im: x[1] }));
+    const T = [];
+    for (let k = 0; k < N / 2; k++) {
+      const exp = -2 * Math.PI * k / N;
+      const cos = Math.cos(exp), sin = Math.sin(exp);
+      const tref = odd[k];
+      T.push({ re: cos * tref.re - sin * tref.im, im: cos * tref.im + sin * tref.re });
+    }
+    const out = Array(N);
+    for (let k = 0; k < N / 2; k++) {
+      const e = even[k]; const t = T[k];
+      out[k] = { re: e.re + t.re, im: e.im + t.im };
+      out[k + N / 2] = { re: e.re - t.re, im: e.im - t.im };
+    }
+    return out;
   }
 
-  // --- 4. Analyse FFT
+  function magnitudeSpectrum (buffer) {
+    const N = buffer.length;
+    // Convert real‑valued buffer -> complex pairs [re, im]
+    const complex = buffer.map(v => [v, 0]);
+    const fftOut = simpleFFT(complex);
+    return fftOut.slice(0, N / 2).map(c => Math.sqrt(c.re * c.re + c.im * c.im) / N);
+  }
+
+  // ---------- Analyse ----------
   function analyse () {
-    // Résolution temporelle réelle
     const duration = (timeStamps.at(-1) - timeStamps[0]) / 1000;
     const fs = frames[0].length / duration;
-    const FFTCtor = typeof FFT !== 'undefined' ? FFT : (typeof DSP !== 'undefined' && DSP.FFT ? DSP.FFT : null);
-    if (!FFTCtor) {
-      alert('Librairie FFT non trouvée');
-      return;
-    }
 
-    chartsDiv.innerHTML = '';
     const freqPeaks = [], ampPeaks = [];
+    chartsDiv.innerHTML = '';
 
     frames.forEach((series, idx) => {
       const n = 1 << Math.floor(Math.log2(series.length));
-      const fft = new FFTCtor(n, fs);
-      fft.forward(series.slice(-n));
-      const spec = fft.spectrum; // half‑spectrum, length n/2
+      const windowed = series.slice(-n);
+      const spectrum = magnitudeSpectrum(windowed);
       const hzPerBin = fs / n;
-      const hz = spec.map((_, i) => i * hzPerBin);
 
-      const points = hz.map((h, i) => ({ h, m: spec[i] }))
+      const points = spectrum.map((mag, i) => ({ h: i * hzPerBin, m: mag }))
         .filter(p => p.h >= MIN_HZ && p.h <= MAX_HZ);
       const peak = points.reduce((a, b) => (b.m > a.m ? b : a), { h: 0, m: 0 });
       freqPeaks.push(peak.h.toFixed(2));
@@ -137,39 +152,33 @@
     statusP.textContent = 'Analyse terminée';
   }
 
+  // ---------- Chart / CSV ----------
   function drawChart (idx, labels, mags) {
     const c = document.createElement('canvas');
     c.className = 'chart';
     chartsDiv.appendChild(c);
-    new Chart(c, {
-      type: 'line',
-      data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] },
-      options: { scales: { x: { title: { display: true, text: 'Hz' } }, y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
-    });
+    new Chart(c, { type: 'line', data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] }, options: { scales: { x: { title: { display: true, text: 'Hz' } }, y: { beginAtZero: true } }, plugins: { legend: { display: false } } } });
   }
 
-  // --- 5. Export CSV
   function exportCSV (freqs, amps) {
     const ts = new Date().toISOString();
     const lines = freqs.map((f, i) => `${ts},${f},${amps[i]}`);
-    const csv = 'timestamp,frequency,amplitude\n' + lines.join('\n') + '\n';
+    const csv = 'timestamp,frequency,amplitude
+' + lines.join('
+') + '
+';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
     a.href = url; a.download = `tremor_${ts}.csv`; a.click();
     URL.revokeObjectURL(url);
   }
 
-  // --- 6. UI events
+  // ---------- UI ----------
   startBtn.addEventListener('click', () => {
-    startBtn.disabled = true;
-    resultsSec.hidden = true;
-    startRecording();
+    startBtn.disabled = true; resultsSec.hidden = true; startRecording();
   });
-
   restartBtn.addEventListener('click', () => {
-    startBtn.disabled = false;
-    resultsSec.hidden = true;
-    statusP.textContent = 'Prêt !';
+    startBtn.disabled = false; resultsSec.hidden = true; statusP.textContent = 'Prêt !';
   });
 
   initCamera();
