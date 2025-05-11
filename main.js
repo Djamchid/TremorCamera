@@ -125,7 +125,11 @@
     const segLen = Math.min(256, 1 << Math.floor(Math.log2(N)));
     if (segLen < 32) return { freqs: [], psd: [] }; // trop court
     const step = segLen / 2;
-    const fft = new FFT(segLen);
+    const FFTCtor = window.FFT || (window.fftjs && window.fftjs.FFT);
+    if (!FFTCtor) {
+      throw new Error('Librairie FFT non disponible');
+    }
+    const fft = new FFTCtor(segLen);
     const hann = Float32Array.from({ length: segLen }, (_, n) => 0.5 * (1 - Math.cos(2 * Math.PI * n / (segLen - 1))));
 
     const psdAccu = new Float32Array(segLen / 2).fill(0);
