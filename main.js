@@ -126,7 +126,7 @@
       }
       // Si nous attendons une main
       else if (waitingForHand) {
-        statusP.textContent = 'En attente de la détection d'une main...';
+        statusP.textContent = 'En attente de la détection d\'une main...';
       }
     }
   }
