@@ -39,6 +39,38 @@ canvas.chart {
   border-radius: 8px;
 }
 
+/* Style pour le graphique de somme des PSD */
+canvas.sumChart {
+  background: linear-gradient(to bottom, #f8f9fa, #fff);
+  border: 2px solid #ddd !important;
+  border-radius: 10px !important;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+  min-height: 350px !important;
+  padding: 10px;
+}
+
+/* Séparateur entre le graphique de somme et les graphiques individuels */
+#charts > div:first-child {
+  position: relative;
+  padding-bottom: 30px;
+  grid-column: 1 / -1;
+  margin-bottom: 1rem;
+  border-bottom: 1px dashed #ccc;
+}
+
+#charts > div:first-child::after {
+  content: "Points individuels";
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #f0f0f0;
+  padding: 2px 15px;
+  border-radius: 15px;
+  font-size: 14px;
+  color: #666;
+}
+
 /* Responsive: une seule colonne sur petits écrans */
 @media (max-width: 768px) {
   #charts {
