@@ -1,24 +1,32 @@
 (function () {
-  const SAMPLE_SECONDS = 10;
-  const MIN_HZ = 1, MAX_HZ = 12, NODE_COUNT = 5;
+  // === Paramètres généraux ===
+  const SAMPLE_SECONDS = 10;       // durée d’acquisition
+  const NODE_COUNT     = 12;       // tous les nœuds (12 points régulièrement espacés)
+  const MA_WINDOW      = 5;        // K = 5 frames pour moyenne glissante
+  const MIN_HZ = 1, MAX_HZ = 12;   // bande d’intérêt
 
-  const video = document.getElementById('video');
-  const overlay = document.getElementById('overlay');
-  const octx = overlay.getContext('2d');
-  const statusP = document.getElementById('status');
-  const startBtn = document.getElementById('startBtn');
-  const exportBtn = document.getElementById('exportBtn');
-  const restartBtn = document.getElementById('restartBtn');
-  const resultsSec = document.getElementById('results');
-  const chartsDiv = document.getElementById('charts');
-  const summaryP = document.getElementById('summary');
+  // === Sélecteurs DOM ===
+  const video       = document.getElementById('video');
+  const overlay     = document.getElementById('overlay');
+  const octx        = overlay.getContext('2d');
+  const statusP     = document.getElementById('status');
+  const startBtn    = document.getElementById('startBtn');
+  const exportBtn   = document.getElementById('exportBtn');
+  const restartBtn  = document.getElementById('restartBtn');
+  const resultsSec  = document.getElementById('results');
+  const chartsDiv   = document.getElementById('charts');
+  const summaryP    = document.getElementById('summary');
 
-  let recording = false, frames = [], timeStamps = [];
+  // === Buffers ===
+  let recording = false;
+  let v2Series  = [];     // [[v²_t] pour chaque nœud]
+  let timeStamps = [];
+  let lastPos    = Array(NODE_COUNT).fill(null);
 
-  // ---------- Camera ----------
+  // ---------- 1. Caméra ----------
   async function initCamera () {
     if (!location.protocol.startsWith('https') && location.hostname !== 'localhost') {
-      statusP.textContent = '⚠️ HTTPS requis pour la caméra';
+      statusP.textContent = '⚠️ HTTPS requis';
       return;
     }
     try {
@@ -33,12 +41,12 @@
         statusP.textContent = 'Prêt !';
         startBtn.disabled = false;
       };
-    } catch (err) {
-      statusP.textContent = 'Erreur caméra : ' + err.message;
+    } catch (e) {
+      statusP.textContent = 'Erreur caméra : ' + e.message;
     }
   }
 
-  // ---------- Overlay ----------
+  // ---------- 2. Aide visuelle ----------
   function drawGuide () {
     const { width, height } = overlay;
     octx.clearRect(0, 0, width, height);
@@ -58,12 +66,14 @@
     });
   }
 
-  // ---------- Capture ----------
+  // ---------- 3. Enregistrement ----------
   function startRecording () {
-    frames = Array.from({ length: NODE_COUNT }, () => []);
+    v2Series  = Array.from({ length: NODE_COUNT }, () => []);
+    lastPos   = Array(NODE_COUNT).fill(null);
     timeStamps = [];
     recording = true;
     statusP.textContent = 'Enregistrement…';
+
     const off = document.createElement('canvas');
     off.width = video.videoWidth; off.height = video.videoHeight;
     const ictx = off.getContext('2d', { willReadFrequently: true });
@@ -78,99 +88,119 @@
         analyse();
         return;
       }
+
       ictx.drawImage(video, 0, 0);
       const nodes = sampleNodes();
-      const ts = Date.now();
+      const now = Date.now();
       nodes.forEach((pt, idx) => {
-        const [x, y] = pt.map(Math.floor);
-        const d = ictx.getImageData(x, y, 1, 1).data;
-        const lum = 0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2];
-        frames[idx].push(lum);
+        const pos = { x: pt[0], y: pt[1] };
+        if (lastPos[idx]) {
+          const dx = pos.x - lastPos[idx].x;
+          const dy = pos.y - lastPos[idx].y;
+          const v2 = dx * dx + dy * dy;            // carré de la norme  ||Δp||²
+          v2Series[idx].push(v2);
+        }
+        lastPos[idx] = pos;
       });
-      timeStamps.push(ts);
+      timeStamps.push(now);
       requestAnimationFrame(loop);
     })();
   }
 
-  // ---------- FFT helpers ----------
-  function simpleFFT (buffer) {
-    // Cooley‑Tukey radix‑2, recursive (for educational purposes, N must be power‑of‑2)
-    const N = buffer.length;
-    if (N <= 1) return [buffer];
-    const even = simpleFFT(buffer.filter((_, i) => !(i & 1))).map(x => ({ re: x[0], im: x[1] }));
-    const odd  = simpleFFT(buffer.filter((_, i) => i & 1)).map(x => ({ re: x[0], im: x[1] }));
-    const T = [];
-    for (let k = 0; k < N / 2; k++) {
-      const exp = -2 * Math.PI * k / N;
-      const cos = Math.cos(exp), sin = Math.sin(exp);
-      const tref = odd[k];
-      T.push({ re: cos * tref.re - sin * tref.im, im: cos * tref.im + sin * tref.re });
-    }
-    const out = Array(N);
-    for (let k = 0; k < N / 2; k++) {
-      const e = even[k]; const t = T[k];
-      out[k] = { re: e.re + t.re, im: e.im + t.im };
-      out[k + N / 2] = { re: e.re - t.re, im: e.im - t.im };
+  // ---------- 4. Pré‑traitement (dédrift & Welch) ----------
+  function detrend (arr) {
+    const out = new Float32Array(arr.length);
+    for (let t = 0; t < arr.length; t++) {
+      const start = Math.max(0, t - MA_WINDOW + 1);
+      let mean = 0;
+      for (let k = start; k <= t; k++) mean += arr[k];
+      mean /= (t - start + 1);
+      out[t] = arr[t] - mean;
     }
     return out;
   }
 
-  function magnitudeSpectrum (buffer) {
-    const N = buffer.length;
-    // Convert real‑valued buffer -> complex pairs [re, im]
-    const complex = buffer.map(v => [v, 0]);
-    const fftOut = simpleFFT(complex);
-    return fftOut.slice(0, N / 2).map(c => Math.sqrt(c.re * c.re + c.im * c.im) / N);
+  function welchPSD (series, fs) {
+    const N = series.length;
+    const segLen = Math.min(256, 1 << Math.floor(Math.log2(N)));
+    if (segLen < 32) return { freqs: [], psd: [] }; // trop court
+    const step = segLen / 2;
+    const fft = new FFT(segLen);
+    const hann = Float32Array.from({ length: segLen }, (_, n) => 0.5 * (1 - Math.cos(2 * Math.PI * n / (segLen - 1))));
+
+    const psdAccu = new Float32Array(segLen / 2).fill(0);
+    let segments = 0;
+
+    for (let start = 0; start + segLen <= N; start += step) {
+      const re = new Float32Array(segLen);
+      const im = new Float32Array(segLen);
+      for (let n = 0; n < segLen; n++) re[n] = series[start + n] * hann[n];
+      fft.transform(re, im);
+      for (let k = 0; k < segLen / 2; k++) {
+        const mag2 = (re[k] * re[k] + im[k] * im[k]) / segLen;
+        psdAccu[k] += mag2;
+      }
+      segments++;
+    }
+    const psd = Array.from(psdAccu, v => v / segments);
+    const hzPerBin = fs / segLen;
+    const freqs = psd.map((_, k) => k * hzPerBin);
+    return { freqs, psd };
   }
 
-  // ---------- Analyse ----------
+  // ---------- 5. Analyse ----------
   function analyse () {
+    // fréquence d’échantillonnage réelle (v² est calculé frame‑à‑frame)
     const duration = (timeStamps.at(-1) - timeStamps[0]) / 1000;
-    const fs = frames[0].length / duration;
+    const fs = v2Series[0].length / duration;
 
-    const freqPeaks = [], ampPeaks = [];
     chartsDiv.innerHTML = '';
+    const peakFreqs = [], peakAmps = [];
 
-    frames.forEach((series, idx) => {
-      const n = 1 << Math.floor(Math.log2(series.length));
-      const windowed = series.slice(-n);
-      const spectrum = magnitudeSpectrum(windowed);
-      const hzPerBin = fs / n;
+    v2Series.forEach((raw, idx) => {
+      if (raw.length < 32) return; // série trop courte
+      const cleaned = detrend(raw);
+      const { freqs, psd } = welchPSD(cleaned, fs);
 
-      const points = spectrum.map((mag, i) => ({ h: i * hzPerBin, m: mag }))
-        .filter(p => p.h >= MIN_HZ && p.h <= MAX_HZ);
-      const peak = points.reduce((a, b) => (b.m > a.m ? b : a), { h: 0, m: 0 });
-      freqPeaks.push(peak.h.toFixed(2));
-      ampPeaks.push(peak.m.toFixed(4));
+      // filtrage bande 1‑12 Hz
+      const inBand = freqs.map((f, i) => ({ f, m: psd[i] }))
+                         .filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
+      const peak = inBand.reduce((a, b) => (b.m > a.m ? b : a), { f: 0, m: 0 });
+      peakFreqs.push(peak.f.toFixed(2));
+      peakAmps.push(peak.m.toFixed(4));
 
-      drawChart(idx + 1, points.map(p => p.h), points.map(p => p.m));
+      drawChart(idx + 1, inBand.map(p => p.f), inBand.map(p => p.m));
     });
 
-    summaryP.textContent = `Dominantes : ${freqPeaks.join(' Hz, ')} Hz`;
+    summaryP.textContent = `Dominantes : ${peakFreqs.join(' Hz, ')} Hz`;
     resultsSec.hidden = false;
-    exportBtn.onclick = () => exportCSV(freqPeaks, ampPeaks);
+    exportBtn.onclick = () => exportCSV(peakFreqs, peakAmps);
     statusP.textContent = 'Analyse terminée';
   }
 
-  // ---------- Chart / CSV ----------
+  // ---------- 6. Visualization / Export ----------
   function drawChart (idx, labels, mags) {
     const c = document.createElement('canvas');
     c.className = 'chart';
     chartsDiv.appendChild(c);
-    new Chart(c, { type: 'line', data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] }, options: { scales: { x: { title: { display: true, text: 'Hz' } }, y: { beginAtZero: true } }, plugins: { legend: { display: false } } } });
+    new Chart(c, {
+      type: 'line',
+      data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] },
+      options: { scales: { x: { title: { display: true, text: 'Hz' } }, y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
+    });
   }
 
   function exportCSV (freqs, amps) {
     const ts = new Date().toISOString();
     const lines = freqs.map((f, i) => `${ts},${f},${amps[i]}`);
-    const csv = 'timestamp,frequency,amplitude\\n' + lines.join('\\n') + '\\n';
+    const csv = 'timestamp,frequency,amplitude\n' + lines.join('\n') + '\n';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
     a.href = url; a.download = `tremor_${ts}.csv`; a.click();
     URL.revokeObjectURL(url);
   }
 
-  // ---------- UI ----------
+  // ---------- 7. UI ----------
   startBtn.addEventListener('click', () => {
     startBtn.disabled = true; resultsSec.hidden = true; startRecording();
   });
