@@ -1,4 +1,6 @@
 (function () {
+  console.log("=== Démarrage de l'application ===");
+  
   // === Paramètres généraux ===
   const SAMPLE_SECONDS = 10;       // durée d'acquisition
   const NODE_COUNT     = 21;       // utilisons les 21 points de MediaPipe pour une meilleure précision
@@ -19,38 +21,79 @@
 
   // === Buffers ===
   let recording = false;
-  let waitingForHand = false;  // Nouvel état pour attendre la détection d'une main
-  let v2Series  = [];     // [[v²_t] pour chaque nœud]
+  let waitingForHand = false;
+  let v2Series  = [];
   let timeStamps = [];
   let lastPos    = Array(NODE_COUNT).fill(null);
   let currentLandmarks = null;
   let camera = null;
   let handDetected = false;
 
+  // Définition manuelle de HAND_CONNECTIONS si elle n'existe pas
+  if (typeof HAND_CONNECTIONS === 'undefined') {
+    console.log("Définition manuelle de HAND_CONNECTIONS");
+    window.HAND_CONNECTIONS = [
+      [0, 1], [1, 2], [2, 3], [3, 4],
+      [0, 5], [5, 6], [6, 7], [7, 8],
+      [0, 9], [9, 10], [10, 11], [11, 12],
+      [0, 13], [13, 14], [14, 15], [15, 16],
+      [0, 17], [17, 18], [18, 19], [19, 20],
+      [5, 9], [9, 13], [13, 17], [0, 5], [0, 17]
+    ];
+  }
+  
+  // Vérifier que les bibliothèques sont chargées
+  function checkLibraries() {
+    console.log("Vérification des bibliothèques...");
+    
+    if (typeof Hands === 'undefined') {
+      console.error("MediaPipe Hands n'est pas chargé");
+      statusP.textContent = "Erreur: MediaPipe Hands non chargé. Actualisez la page ou vérifiez la console.";
+      return false;
+    }
+    
+    if (typeof Camera === 'undefined') {
+      console.error("MediaPipe Camera n'est pas chargé");
+      statusP.textContent = "Erreur: MediaPipe Camera non chargé. Actualisez la page ou vérifiez la console.";
+      return false;
+    }
+    
+    if (typeof drawConnectors === 'undefined') {
+      console.error("MediaPipe Drawing Utils n'est pas chargé");
+      statusP.textContent = "Erreur: MediaPipe Drawing Utils non chargé. Actualisez la page ou vérifiez la console.";
+      return false;
+    }
+    
+    console.log("Toutes les bibliothèques sont chargées correctement");
+    return true;
+  }
+
   // === Configuration MediaPipe Hands ===
   let hands;
   
   // ---------- 1. Caméra et MediaPipe ----------
   async function initCamera() {
+    console.log("initCamera() appelé");
     if (!location.protocol.startsWith('https') && location.hostname !== 'localhost') {
       statusP.textContent = '⚠️ HTTPS requis pour accéder à la caméra';
       return;
     }
 
     try {
-      // Vérifier que les bibliothèques nécessaires sont disponibles
-      if (typeof Hands === 'undefined' || typeof Camera === 'undefined' || typeof drawConnectors === 'undefined') {
-        console.error("Bibliothèques MediaPipe non chargées");
-        statusP.textContent = "Erreur: Bibliothèques MediaPipe non chargées. Actualisez la page.";
+      // Vérifier que les bibliothèques sont chargées
+      if (!checkLibraries()) {
         return;
       }
 
+      console.log("Création de l'objet Hands...");
       hands = new Hands({
         locateFile: (file) => {
+          console.log(`Demande du fichier: ${file}`);
           return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
         }
       });
       
+      console.log("Configuration des options Hands...");
       hands.setOptions({
         maxNumHands: 1,
         modelComplexity: 1,
@@ -58,31 +101,50 @@
         minTrackingConfidence: 0.5
       });
 
-      hands.onResults(onHandResults);
+      console.log("Définition du callback onResults...");
+      hands.onResults((results) => {
+        try {
+          onHandResults(results);
+        } catch (e) {
+          console.error("Erreur dans onHandResults:", e);
+        }
+      });
 
       // Initialiser la caméra
-      console.log("Initialisation de la caméra...");
+      console.log("Création de l'objet Camera...");
       camera = new Camera(video, {
         onFrame: async () => {
-          if (hands) await hands.send({image: video});
+          try {
+            if (hands) await hands.send({image: video});
+          } catch (e) {
+            console.error("Erreur pendant hands.send:", e);
+          }
         },
         width: 640,
         height: 480
       });
 
+      console.log("Configuration des événements vidéo...");
       video.onloadedmetadata = () => {
+        console.log("Vidéo chargée, dimensions:", video.videoWidth, "x", video.videoHeight);
         overlay.width = video.videoWidth;
         overlay.height = video.videoHeight;
         drawGuide();
       };
 
-      await camera.start();
-      console.log("Caméra démarrée avec succès");
-      statusP.textContent = 'Placez votre main dans le cercle et restez immobile';
-      startBtn.disabled = false;
+      console.log("Démarrage de la caméra...");
+      try {
+        await camera.start();
+        console.log("Caméra démarrée avec succès");
+        statusP.textContent = 'Placez votre main dans le cercle et restez immobile';
+        startBtn.disabled = false;
+      } catch (e) {
+        console.error("Erreur lors du démarrage de la caméra:", e);
+        statusP.textContent = 'Erreur démarrage caméra: ' + e.message;
+      }
     } catch (e) {
+      console.error('Erreur générale dans initCamera:', e);
       statusP.textContent = 'Erreur caméra : ' + e.message;
-      console.error('Erreur initialisation caméra:', e);
     }
   }
 
@@ -99,9 +161,13 @@
       currentLandmarks = results.multiHandLandmarks[0];
       handDetected = true;
       
-      // Dessiner la main détectée
-      drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
-      drawLandmarks(octx, currentLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+      try {
+        // Dessiner la main détectée
+        drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
+        drawLandmarks(octx, currentLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+      } catch (e) {
+        console.error("Erreur lors du dessin de la main:", e);
+      }
       
       // Si nous sommes en attente d'une main, commencer l'enregistrement
       if (waitingForHand && !recording) {
@@ -121,12 +187,10 @@
       // Si nous étions en train d'enregistrer et que la main disparaît
       if (recording) {
         statusP.textContent = 'Main non détectée! Replacez votre main dans le cercle';
-        // Option: pauser l'enregistrement jusqu'à ce que la main soit à nouveau visible
-        // (non implémenté ici pour simplicité)
       }
       // Si nous attendons une main
       else if (waitingForHand) {
-        statusP.textContent = 'En attente de la détection d\'une main...';
+        statusP.textContent = 'En attente de la détection d'une main...';
       }
     }
   }
@@ -642,15 +706,6 @@
       // Sinon, attendre qu'une main soit détectée
       statusP.textContent = 'En attente de la détection d'une main...';
       console.log("En attente de la détection d'une main");
-      
-      // Option: ajouter un délai maximal d'attente
-      // setTimeout(() => {
-      //   if (waitingForHand) {
-      //     waitingForHand = false;
-      //     startBtn.disabled = false;
-      //     statusP.textContent = 'Délai d\'attente dépassé. Réessayez.';
-      //   }
-      // }, 10000);
     }
   });
   
@@ -662,7 +717,18 @@
     statusP.textContent = 'Prêt ! Placez votre main dans le cercle.';
   });
 
-  // Démarrer l'application
-  console.log("Démarrage de l'application...");
-  initCamera();
+  // Définir une fonction pour gérer les erreurs non capturées
+  window.onerror = function(message, source, lineno, colno, error) {
+    console.error("Erreur globale:", message, "à", source, "ligne:", lineno, error);
+    return false;
+  };
+
+  // Alternative: utiliser le DOMContentLoaded pour s'assurer que tout est chargé
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initCamera);
+  } else {
+    // Démarrer l'application
+    console.log("Démarrage de l'application...");
+    setTimeout(initCamera, 100); // Petit délai pour s'assurer que tout est prêt
+  }
 })();
