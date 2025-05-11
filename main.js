@@ -298,20 +298,60 @@
   }
 
   // ---------- 2. Aide visuelle ----------
-  // Fonction modifiée pour dessiner un cercle circonscrit au cadre
+  // Fonction modifiée pour dessiner une ellipse inscrite au cadre
   function drawGuide() {
     const { width, height } = overlay;
     
-    // Dessiner un cercle circonscrit (qui touche les bords du cadre)
-    const radius = Math.min(width, height) / 2 - 2; // -2 pour assurer une petite marge
+    // Centre de l'ellipse
     const centerX = width / 2;
     const centerY = height / 2;
     
-    // Cercle extérieur
+    // Rayons de l'ellipse (ajustés pour s'inscrire dans le cadre)
+    const radiusX = width / 2 - 2; // -2 pour assurer une petite marge
+    const radiusY = height / 2 - 2;
+    
+    // Dessiner l'ellipse
     octx.strokeStyle = '#0c0'; // Vert
     octx.lineWidth = 4;
     octx.beginPath();
-    octx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    
+    // L'API Canvas ne fournit pas de méthode directe pour dessiner une ellipse complète,
+    // donc nous utilisons une approximation avec des courbes de Bézier
+    const kappa = 0.5522848; // Constante mathématique pour approximation d'ellipse
+    const ox = radiusX * kappa; // Contrôle horizontal
+    const oy = radiusY * kappa; // Contrôle vertical
+    
+    // Commencer en haut
+    octx.moveTo(centerX, centerY - radiusY);
+    
+    // Dessiner la partie supérieure droite
+    octx.bezierCurveTo(
+      centerX + ox, centerY - radiusY,
+      centerX + radiusX, centerY - oy,
+      centerX + radiusX, centerY
+    );
+    
+    // Dessiner la partie inférieure droite
+    octx.bezierCurveTo(
+      centerX + radiusX, centerY + oy,
+      centerX + ox, centerY + radiusY,
+      centerX, centerY + radiusY
+    );
+    
+    // Dessiner la partie inférieure gauche
+    octx.bezierCurveTo(
+      centerX - ox, centerY + radiusY,
+      centerX - radiusX, centerY + oy,
+      centerX - radiusX, centerY
+    );
+    
+    // Dessiner la partie supérieure gauche
+    octx.bezierCurveTo(
+      centerX - radiusX, centerY - oy,
+      centerX - ox, centerY - radiusY,
+      centerX, centerY - radiusY
+    );
+    
     octx.stroke();
     
     // Lignes repères (en option)
@@ -320,12 +360,12 @@
     octx.beginPath();
     
     // Ligne horizontale
-    octx.moveTo(centerX - radius, centerY);
-    octx.lineTo(centerX + radius, centerY);
+    octx.moveTo(centerX - radiusX, centerY);
+    octx.lineTo(centerX + radiusX, centerY);
     
     // Ligne verticale
-    octx.moveTo(centerX, centerY - radius);
-    octx.lineTo(centerX, centerY + radius);
+    octx.moveTo(centerX, centerY - radiusY);
+    octx.lineTo(centerX, centerY + radiusY);
     
     octx.stroke();
   }
@@ -628,8 +668,33 @@
     sumChartDiv.appendChild(sumCanvas);
     chartsDiv.appendChild(sumChartDiv);
 
+    // Calculer le PSD total et sa puissance totale
+    const totalPSD = new Array(filteredFreqs.length).fill(0);
+    let grandTotalPower = 0;
+    nodeData.forEach(node => {
+      node.psd.forEach((val, i) => {
+        totalPSD[i] += val;
+      });
+    });
+    grandTotalPower = totalPSD.reduce((sum, val) => sum + val, 0);
+
     // Préparer les datasets pour le graphique
-    const datasets = nodeData.map((node, idx) => {
+    const datasets = [
+      // Ajouter le dataset du total en premier
+      {
+        label: `Total: ${Math.round(grandTotalPower)}`,
+        data: totalPSD,
+        backgroundColor: 'rgba(0, 0, 0, 0.2)',
+        borderColor: 'rgba(0, 0, 0, 0.5)',
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3
+      }
+    ];
+
+    // Ajouter les datasets individuels
+    datasets.push(...nodeData.map((node, idx) => {
       // Générer une couleur basée sur la position dans le tableau
       const hue = (idx * 360 / nodeData.length) % 360;
       return {
@@ -642,7 +707,7 @@
         fill: true,
         tension: 0.3
       };
-    });
+    }));
 
     // Créer le graphique avec Chart.js
     new Chart(sumCanvas, {
@@ -671,7 +736,7 @@
               display: true,
               text: 'Amplitude'
             },
-            stacked: false // Pas d'empilement pour voir les contributions individuelles
+            stacked: true // Changé de false à true pour empiler les graphiques
           }
         },
         plugins: {
