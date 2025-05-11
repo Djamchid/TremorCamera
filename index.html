@@ -5,25 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tremor MVP</title>
   <link rel="stylesheet" href="style.css" />
-  <!-- 🔗 Librairies -->
-  <script src="https://cdn.jsdelivr.net/npm/dsp.js@0.0.2/dsp.min.js"></script>
+  
+  <!-- Uniquement les bibliothèques essentielles -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   
-  <!-- FFT.js - Décommenté et avec la bonne version -->
-  <script src="https://cdn.jsdelivr.net/npm/fft.js@4.0.4/lib/fft.js"></script>
-  
-  <!-- Polyfill pour s'assurer que FFT est disponible dans window -->
-  <script>
-    // S'assurer que FFT est disponible globalement pour notre application
-    window.addEventListener('DOMContentLoaded', () => {
-      if (typeof FFT === 'undefined' && window.fftjs && window.fftjs.FFT) {
-        window.FFT = window.fftjs.FFT;
-      } else if (typeof FFT === 'undefined' && typeof dsp !== 'undefined') {
-        // Utiliser DSP.js comme fallback
-        window.FFT = dsp.FFT;
-      }
-    });
-  </script>
+  <!-- Pas besoin de FFT externe, nous avons notre propre implémentation -->
 </head>
 <body>
   <header>
