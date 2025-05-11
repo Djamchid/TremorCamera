@@ -704,7 +704,7 @@
       startRecording();
     } else {
       // Sinon, attendre qu'une main soit détectée
-      statusP.textContent = 'En attente de la détection d'une main...';
+      statusP.textContent = 'En attente de la détection d\'une main...';
       console.log("En attente de la détection d'une main");
     }
   });
