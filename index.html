@@ -6,7 +6,7 @@
   <title>Tremor MVP</title>
   <link rel="stylesheet" href="style.css" />
   <!-- 🔗 CDN libs -->
-  <script src="https://cdn.jsdelivr.net/npm/dsp.js@0.0.2/dsp.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dsp.js@0.0.2/dist/dsp.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,8 @@
     <section id="capture">
       <video id="video" autoplay playsinline></video>
       <canvas id="overlay"></canvas>
-      <button id="startBtn" class="primary">Démarrer</button>
+      <p id="status" class="status">Initialisation caméra…</p>
+      <button id="startBtn" class="primary" disabled>Démarrer</button>
     </section>
 
     <section id="results" hidden>
@@ -31,7 +32,7 @@
   </main>
 
   <footer>
-    <p class="note">Assurez‑vous que vos doigts remplissent le cercle de référence.</p>
+    <p class="note">Placez vos doigts à l’intérieur du cercle vert.</p>
   </footer>
 
   <script src="main.js"></script>
