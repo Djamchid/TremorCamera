@@ -251,6 +251,12 @@
 
   // ---------- 3. Enregistrement ----------
   function startRecording() {
+    
+    // Modifier également la fonction startRecording() pour effacer les résultats précédents
+    // Ajouter cette ligne au début de la fonction startRecording() :
+    if (window.TremorViz && typeof window.TremorViz.clearResults === 'function') {
+      window.TremorViz.clearResults();
+    }
     console.log("Démarrage de l'enregistrement...");
     v2Series = Array(NODE_COUNT).fill().map(() => []);
     lastPos = Array(NODE_COUNT).fill(null);
@@ -629,6 +635,14 @@
     } else {
       summaryP.textContent = "Aucune fréquence dominante détectée. Veuillez réessayer en gardant la main plus stable dans le cercle.";
       resultsSec.hidden = false;
+      // Modifier la fonction analyse() pour intégrer la visualisation
+      // Ajouter ce code juste après cette ligne :
+      // resultsSec.hidden = false;
+      
+      // Ajouter cette ligne après "resultsSec.hidden = false;"
+      if (window.TremorViz && typeof window.TremorViz.displayResults === 'function') {
+        window.TremorViz.displayResults(peakFreqs, peakAmps);
+      }
     }
     
     statusP.textContent = 'Analyse terminée';
