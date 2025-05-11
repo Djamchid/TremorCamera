@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tremor MVP</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- 🔗 CDN libs -->
+  <script src="https://cdn.jsdelivr.net/npm/dsp.js@0.0.2/dsp.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Évaluation des tremblements de la main</h1>
+  </header>
+
+  <main>
+    <section id="capture">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+      <button id="startBtn" class="primary">Démarrer</button>
+    </section>
+
+    <section id="results" hidden>
+      <h2>Résultats</h2>
+      <div id="charts"></div>
+      <p id="summary"></p>
+      <button id="exportBtn">Exporter CSV</button>
+      <button id="restartBtn">Nouvelle mesure</button>
+    </section>
+  </main>
+
+  <footer>
+    <p class="note">Assurez‑vous que vos doigts remplissent le cercle de référence.</p>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>
