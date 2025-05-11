@@ -1,9 +1,9 @@
 (function () {
   // === Paramètres généraux ===
-  const SAMPLE_SECONDS = 10;       // durée d’acquisition
+  const SAMPLE_SECONDS = 10;       // durée d'acquisition
   const NODE_COUNT     = 12;       // tous les nœuds (12 points régulièrement espacés)
   const MA_WINDOW      = 5;        // K = 5 frames pour moyenne glissante
-  const MIN_HZ = 1, MAX_HZ = 12;   // bande d’intérêt
+  const MIN_HZ = 1, MAX_HZ = 12;   // bande d'intérêt
 
   // === Sélecteurs DOM ===
   const video       = document.getElementById('video');
@@ -38,11 +38,11 @@
         drawGuide();
       };
       video.oncanplay = () => {
-        statusP.textContent = 'Prêt !';
+        statusP.textContent = 'Prêt !';
         startBtn.disabled = false;
       };
     } catch (e) {
-      statusP.textContent = 'Erreur caméra : ' + e.message;
+      statusP.textContent = 'Erreur caméra : ' + e.message;
     }
   }
 
@@ -97,7 +97,7 @@
         if (lastPos[idx]) {
           const dx = pos.x - lastPos[idx].x;
           const dy = pos.y - lastPos[idx].y;
-          const v2 = dx * dx + dy * dy;            // carré de la norme  ||Δp||²
+          const v2 = dx * dx + dy * dy;            // carré de la norme  ||Δp||²
           v2Series[idx].push(v2);
         }
         lastPos[idx] = pos;
@@ -125,27 +125,30 @@
     const segLen = Math.min(256, 1 << Math.floor(Math.log2(N)));
     if (segLen < 32) return { freqs: [], psd: [] }; // trop court
     const step = segLen / 2;
-    const FFTCtor = window.FFT || (window.fftjs && window.fftjs.FFT);
-    if (!FFTCtor) {
-      throw new Error('Librairie FFT non disponible');
-    }
-    const fft = new FFTCtor(segLen);
+    
+    // Solution 1: Utiliser DSP.js qui est déjà chargé
+    const fft = new window.FFT(segLen, fs);
     const hann = Float32Array.from({ length: segLen }, (_, n) => 0.5 * (1 - Math.cos(2 * Math.PI * n / (segLen - 1))));
 
     const psdAccu = new Float32Array(segLen / 2).fill(0);
     let segments = 0;
 
     for (let start = 0; start + segLen <= N; start += step) {
-      const re = new Float32Array(segLen);
-      const im = new Float32Array(segLen);
-      for (let n = 0; n < segLen; n++) re[n] = series[start + n] * hann[n];
-      fft.transform(re, im);
+      const segment = new Float32Array(segLen);
+      for (let n = 0; n < segLen; n++) {
+        segment[n] = series[start + n] * hann[n];
+      }
+      
+      // Calcul FFT avec DSP.js
+      fft.forward(segment);
+      const spectrum = fft.spectrum;
+      
       for (let k = 0; k < segLen / 2; k++) {
-        const mag2 = (re[k] * re[k] + im[k] * im[k]) / segLen;
-        psdAccu[k] += mag2;
+        psdAccu[k] += spectrum[k];
       }
       segments++;
     }
+    
     const psd = Array.from(psdAccu, v => v / segments);
     const hzPerBin = fs / segLen;
     const freqs = psd.map((_, k) => k * hzPerBin);
@@ -154,7 +157,7 @@
 
   // ---------- 5. Analyse ----------
   function analyse () {
-    // fréquence d’échantillonnage réelle (v² est calculé frame‑à‑frame)
+    // fréquence d'échantillonnage réelle (v² est calculé frame‑à‑frame)
     const duration = (timeStamps.at(-1) - timeStamps[0]) / 1000;
     const fs = v2Series[0].length / duration;
 
@@ -166,7 +169,7 @@
       const cleaned = detrend(raw);
       const { freqs, psd } = welchPSD(cleaned, fs);
 
-      // filtrage bande 1‑12 Hz
+      // filtrage bande 1‑12 Hz
       const inBand = freqs.map((f, i) => ({ f, m: psd[i] }))
                          .filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
       const peak = inBand.reduce((a, b) => (b.m > a.m ? b : a), { f: 0, m: 0 });
@@ -176,7 +179,7 @@
       drawChart(idx + 1, inBand.map(p => p.f), inBand.map(p => p.m));
     });
 
-    summaryP.textContent = `Dominantes : ${peakFreqs.join(' Hz, ')} Hz`;
+    summaryP.textContent = `Dominantes : ${peakFreqs.join(' Hz, ')} Hz`;
     resultsSec.hidden = false;
     exportBtn.onclick = () => exportCSV(peakFreqs, peakAmps);
     statusP.textContent = 'Analyse terminée';
@@ -189,7 +192,7 @@
     chartsDiv.appendChild(c);
     new Chart(c, {
       type: 'line',
-      data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] },
+      data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] },
       options: { scales: { x: { title: { display: true, text: 'Hz' } }, y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
     });
   }
@@ -209,7 +212,7 @@
     startBtn.disabled = true; resultsSec.hidden = true; startRecording();
   });
   restartBtn.addEventListener('click', () => {
-    startBtn.disabled = false; resultsSec.hidden = true; statusP.textContent = 'Prêt !';
+    startBtn.disabled = false; resultsSec.hidden = true; statusP.textContent = 'Prêt !';
   });
 
   initCamera();
