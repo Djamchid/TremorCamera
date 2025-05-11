@@ -31,7 +31,8 @@
         offCanvas = document.createElement('canvas');
         offCanvas.width = video.videoWidth;
         offCanvas.height = video.videoHeight;
-        offCtx = offCanvas.getContext('2d');
+        // Le contexte d’étude lit souvent les pixels ; on signale l’usage intensif :
+        offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
         drawGuide();
       };
       video.oncanplay = () => {
