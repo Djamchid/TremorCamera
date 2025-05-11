@@ -1,7 +1,7 @@
 (function () {
   // === Paramètres généraux ===
   const SAMPLE_SECONDS = 10;       // durée d'acquisition
-  const NODE_COUNT     = 12;       // tous les nœuds (12 points régulièrement espacés)
+  const NODE_COUNT     = 21;       // utilisons les 21 points de MediaPipe pour une meilleure précision
   const MA_WINDOW      = 5;        // K = 5 frames pour moyenne glissante
   const MIN_HZ = 1, MAX_HZ = 12;   // bande d'intérêt
 
@@ -22,34 +22,122 @@
   let v2Series  = [];     // [[v²_t] pour chaque nœud]
   let timeStamps = [];
   let lastPos    = Array(NODE_COUNT).fill(null);
+  let currentLandmarks = null;
+  let camera = null;
 
-  // ---------- 1. Caméra ----------
-  async function initCamera () {
+  // === Configuration MediaPipe Hands ===
+  const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  // ---------- 1. Caméra et MediaPipe ----------
+  async function initCamera() {
     if (!location.protocol.startsWith('https') && location.hostname !== 'localhost') {
-      statusP.textContent = '⚠️ HTTPS requis';
+      statusP.textContent = '⚠️ HTTPS requis pour accéder à la caméra';
       return;
     }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-      video.srcObject = stream;
+      hands.onResults(onHandResults);
+
+      // Initialiser Camera Utils de MediaPipe pour une gestion simplifiée
+      camera = new Camera(video, {
+        onFrame: async () => {
+          await hands.send({image: video});
+        },
+        width: 640,
+        height: 480
+      });
+
       video.onloadedmetadata = () => {
         overlay.width = video.videoWidth;
         overlay.height = video.videoHeight;
         drawGuide();
       };
-      video.oncanplay = () => {
-        statusP.textContent = 'Prêt !';
-        startBtn.disabled = false;
-      };
+
+      await camera.start();
+      statusP.textContent = 'Placez votre main dans le cercle et restez immobile';
+      startBtn.disabled = false;
     } catch (e) {
       statusP.textContent = 'Erreur caméra : ' + e.message;
+      console.error('Erreur initialisation caméra:', e);
+    }
+  }
+
+  // Traitement des résultats de détection de main
+  function onHandResults(results) {
+    // Effacer le canvas
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    
+    // Dessiner le guide
+    drawGuide();
+    
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      // Stocker les landmarks pour le traitement pendant l'enregistrement
+      currentLandmarks = results.multiHandLandmarks[0];
+      
+      // Dessiner la main détectée
+      drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
+      drawLandmarks(octx, currentLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+      
+      // Si l'enregistrement est en cours, traiter les données
+      if (recording && currentLandmarks) {
+        processHandData();
+      }
+    } else {
+      currentLandmarks = null;
+      if (recording) {
+        statusP.textContent = 'Main non détectée! Replacez votre main dans le cercle';
+      }
+    }
+  }
+
+  // Traiter les données de la main pour l'analyse des tremblements
+  function processHandData() {
+    if (!currentLandmarks) return;
+    
+    const now = Date.now();
+    
+    currentLandmarks.forEach((landmark, idx) => {
+      // Convertir les coordonnées normalisées [0-1] en pixels
+      const pos = {
+        x: landmark.x * overlay.width,
+        y: landmark.y * overlay.height
+      };
+      
+      if (lastPos[idx]) {
+        const dx = pos.x - lastPos[idx].x;
+        const dy = pos.y - lastPos[idx].y;
+        const v2 = dx * dx + dy * dy;  // carré de la norme ||Δp||²
+        
+        // S'assurer que le tableau existe pour ce nœud
+        if (!v2Series[idx]) v2Series[idx] = [];
+        
+        v2Series[idx].push(v2);
+      }
+      
+      lastPos[idx] = pos;
+    });
+    
+    timeStamps.push(now);
+    
+    // Vérifier si nous avons atteint la durée d'enregistrement
+    const elapsed = (now - timeStamps[0]) / 1000;
+    if (elapsed >= SAMPLE_SECONDS) {
+      stopRecording();
     }
   }
 
   // ---------- 2. Aide visuelle ----------
-  function drawGuide () {
+  function drawGuide() {
     const { width, height } = overlay;
-    octx.clearRect(0, 0, width, height);
     octx.strokeStyle = '#0c0';
     octx.lineWidth = 4;
     octx.beginPath();
@@ -57,58 +145,25 @@
     octx.stroke();
   }
 
-  function sampleNodes () {
-    const { width, height } = overlay;
-    const r = Math.min(width, height) * 0.35;
-    return [...Array(NODE_COUNT).keys()].map(i => {
-      const a = (i * 360 / NODE_COUNT) * Math.PI / 180;
-      return [width / 2 + r * Math.cos(a), height / 2 + r * Math.sin(a)];
-    });
-  }
-
   // ---------- 3. Enregistrement ----------
-  function startRecording () {
-    v2Series  = Array.from({ length: NODE_COUNT }, () => []);
-    lastPos   = Array(NODE_COUNT).fill(null);
+  function startRecording() {
+    v2Series = Array(NODE_COUNT).fill().map(() => []);
+    lastPos = Array(NODE_COUNT).fill(null);
     timeStamps = [];
     recording = true;
-    statusP.textContent = 'Enregistrement…';
+    statusP.textContent = 'Enregistrement en cours... Gardez votre main visible';
+  }
 
-    const off = document.createElement('canvas');
-    off.width = video.videoWidth; off.height = video.videoHeight;
-    const ictx = off.getContext('2d', { willReadFrequently: true });
-    const t0 = performance.now();
-
-    (function loop () {
-      if (!recording) return;
-      const t = (performance.now() - t0) / 1000;
-      if (t >= SAMPLE_SECONDS) {
-        recording = false;
-        statusP.textContent = 'Analyse…';
-        analyse();
-        return;
-      }
-
-      ictx.drawImage(video, 0, 0);
-      const nodes = sampleNodes();
-      const now = Date.now();
-      nodes.forEach((pt, idx) => {
-        const pos = { x: pt[0], y: pt[1] };
-        if (lastPos[idx]) {
-          const dx = pos.x - lastPos[idx].x;
-          const dy = pos.y - lastPos[idx].y;
-          const v2 = dx * dx + dy * dy;            // carré de la norme  ||Δp||²
-          v2Series[idx].push(v2);
-        }
-        lastPos[idx] = pos;
-      });
-      timeStamps.push(now);
-      requestAnimationFrame(loop);
-    })();
+  function stopRecording() {
+    recording = false;
+    statusP.textContent = 'Analyse des données...';
+    
+    // Lancer l'analyse après un court délai pour permettre à l'interface de se mettre à jour
+    setTimeout(analyse, 100);
   }
 
   // ---------- 4. Pré‑traitement (dédrift & Welch) ----------
-  function detrend (arr) {
+  function detrend(arr) {
     const out = new Float32Array(arr.length);
     for (let t = 0; t < arr.length; t++) {
       const start = Math.max(0, t - MA_WINDOW + 1);
@@ -381,8 +436,14 @@
   }
 
   // ---------- 5. Analyse ----------
-  function analyse () {
-    // fréquence d'échantillonnage réelle (v² est calculé frame‑à‑frame)
+  function analyse() {
+    // Vérifier si nous avons suffisamment de données
+    if (timeStamps.length < 10) {
+      statusP.textContent = "Pas assez de données pour l'analyse";
+      return;
+    }
+    
+    // Fréquence d'échantillonnage réelle
     const duration = (timeStamps.at(-1) - timeStamps[0]) / 1000;
     const fs = v2Series[0].length / duration;
     
@@ -390,15 +451,19 @@
 
     chartsDiv.innerHTML = '';
     const peakFreqs = [], peakAmps = [];
-
-    v2Series.forEach((raw, idx) => {
-      if (raw.length < 32) {
-        console.warn(`Série ${idx} trop courte (${raw.length} échantillons)`);
+    
+    // Sélectionner les landmarks les plus informatifs pour l'analyse
+    // Points des doigts (4, 8, 12, 16, 20) et articulations principales (5, 9, 13, 17)
+    const keyPoints = [0, 4, 5, 8, 9, 12, 13, 16, 17, 20];
+    
+    keyPoints.forEach((pointIdx, idx) => {
+      if (!v2Series[pointIdx] || v2Series[pointIdx].length < 32) {
+        console.warn(`Série ${pointIdx} trop courte ou manquante (${v2Series[pointIdx]?.length || 0} échantillons)`);
         return; // série trop courte
       }
       
-      console.log(`Analyse de la série ${idx}: ${raw.length} points`);
-      const cleaned = detrend(raw);
+      console.log(`Analyse de la série ${pointIdx}: ${v2Series[pointIdx].length} points`);
+      const cleaned = detrend(v2Series[pointIdx]);
       const { freqs, psd } = welchPSD(cleaned, fs);
 
       // Création des points {f, m} pour le filtrage
@@ -408,25 +473,51 @@
       if (inBand.length > 0) {
         // Trouver le pic principal
         const peak = inBand.reduce((a, b) => (b.m > a.m ? b : a), { f: 0, m: 0 });
-        peakFreqs.push(peak.f.toFixed(2));
-        peakAmps.push(peak.m.toFixed(4));
         
-        console.log(`Série ${idx}: pic à ${peak.f.toFixed(2)} Hz avec amplitude ${peak.m.toFixed(4)}`);
-        
-        // Dessiner le graphique
-        drawChart(idx + 1, freqs, psd);
+        // Ne garder que les pics significatifs
+        if (peak.m > 0.1) {
+          peakFreqs.push(peak.f.toFixed(2));
+          peakAmps.push(peak.m.toFixed(4));
+          
+          // Nommer le point selon la convention MediaPipe
+          let pointName;
+          if (pointIdx === 0) pointName = "Poignet";
+          else if (pointIdx === 4) pointName = "Pouce";
+          else if (pointIdx === 8) pointName = "Index";
+          else if (pointIdx === 12) pointName = "Majeur";
+          else if (pointIdx === 16) pointName = "Annulaire";
+          else if (pointIdx === 20) pointName = "Auriculaire";
+          else pointName = `Point ${pointIdx}`;
+          
+          console.log(`${pointName}: pic à ${peak.f.toFixed(2)} Hz avec amplitude ${peak.m.toFixed(4)}`);
+          
+          // Dessiner le graphique
+          drawChart(pointName, freqs, psd);
+        }
       } else {
-        console.warn(`Aucune donnée valide pour la série ${idx}`);
+        console.warn(`Aucune donnée valide pour la série ${pointIdx}`);
       }
     });
 
     // Afficher les résultats
     if (peakFreqs.length > 0) {
-      summaryP.textContent = `Dominantes : ${peakFreqs.join(' Hz, ')} Hz`;
+      // Calculer la fréquence moyenne pondérée par l'amplitude
+      const weightedSum = peakFreqs.reduce((sum, freq, i) => sum + parseFloat(freq) * parseFloat(peakAmps[i]), 0);
+      const totalWeight = peakAmps.reduce((sum, amp) => sum + parseFloat(amp), 0);
+      const avgFreq = (weightedSum / totalWeight).toFixed(2);
+      
+      let tremorType = "";
+      if (avgFreq < 4) tremorType = "Tremblement repos (parkinsonien)";
+      else if (avgFreq < 7) tremorType = "Tremblement essentiel";
+      else tremorType = "Tremblement physiologique ou d'anxiété";
+      
+      summaryP.innerHTML = `<strong>Fréquence dominante: ${avgFreq} Hz</strong><br>
+                          Classification possible: ${tremorType}<br>
+                          Fréquences détectées: ${peakFreqs.join(' Hz, ')} Hz`;
       resultsSec.hidden = false;
       exportBtn.onclick = () => exportCSV(peakFreqs, peakAmps);
     } else {
-      summaryP.textContent = "Aucune fréquence dominante détectée";
+      summaryP.textContent = "Aucune fréquence dominante détectée. Veuillez réessayer en gardant la main plus stable dans le cercle.";
       resultsSec.hidden = false;
     }
     
@@ -434,24 +525,50 @@
   }
 
   // ---------- 6. Visualization / Export ----------
-  function drawChart (idx, labels, mags) {
+  function drawChart(label, freqs, mags) {
     const c = document.createElement('canvas');
     c.className = 'chart';
     chartsDiv.appendChild(c);
     new Chart(c, {
       type: 'line',
-      data: { labels, datasets: [{ label: `Nœud ${idx}`, data: mags, fill: false }] },
+      data: { 
+        labels: freqs.map(f => f.toFixed(1)), 
+        datasets: [{ 
+          label: label, 
+          data: mags, 
+          borderColor: '#0066cc',
+          backgroundColor: 'rgba(0, 102, 204, 0.1)',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: true
+        }] 
+      },
       options: { 
         scales: { 
-          x: { title: { display: true, text: 'Hz' } }, 
+          x: { 
+            title: { display: true, text: 'Hz' },
+            ticks: { maxTicksLimit: 10 }
+          }, 
           y: { beginAtZero: true } 
-        }, 
-        plugins: { legend: { display: false } } 
+        },
+        plugins: { 
+          legend: { display: true, position: 'top' },
+          tooltip: {
+            callbacks: {
+              title: (items) => `${items[0].label} Hz`,
+              label: (item) => `Amplitude: ${item.raw.toFixed(5)}`
+            }
+          }
+        },
+        animation: {
+          duration: 500
+        }
       }
     });
   }
 
-  function exportCSV (freqs, amps) {
+  function exportCSV(freqs, amps) {
     const ts = new Date().toISOString();
     const lines = freqs.map((f, i) => `${ts},${f},${amps[i]}`);
     const csv = 'timestamp,frequency,amplitude\n' + lines.join('\n') + '\n';
@@ -463,11 +580,21 @@
 
   // ---------- 7. UI ----------
   startBtn.addEventListener('click', () => {
-    startBtn.disabled = true; resultsSec.hidden = true; startRecording();
+    if (!currentLandmarks) {
+      statusP.textContent = 'Aucune main détectée. Placez votre main dans le cercle.';
+      return;
+    }
+    startBtn.disabled = true; 
+    resultsSec.hidden = true; 
+    startRecording();
   });
+  
   restartBtn.addEventListener('click', () => {
-    startBtn.disabled = false; resultsSec.hidden = true; statusP.textContent = 'Prêt !';
+    startBtn.disabled = false; 
+    resultsSec.hidden = true; 
+    statusP.textContent = 'Prêt ! Placez votre main dans le cercle.';
   });
 
+  // Démarrer l'application
   initCamera();
 })();
