@@ -6,10 +6,13 @@
   <title>Tremor MVP</title>
   <link rel="stylesheet" href="style.css" />
   
-  <!-- Uniquement les bibliothèques essentielles -->
+  <!-- Bibliothèques essentielles -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   
-  <!-- Pas besoin de FFT externe, nous avons notre propre implémentation -->
+  <!-- MediaPipe Hands pour la détection des mains -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 </head>
 <body>
   <header>
@@ -34,7 +37,7 @@
   </main>
 
   <footer>
-    <p class="note">Placez vos doigts à l'intérieur du cercle vert.</p>
+    <p class="note">Placez votre main dans le cercle vert et gardez-la visible.</p>
   </footer>
 
 <script src="main.js"></script>
