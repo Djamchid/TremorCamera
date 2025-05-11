@@ -162,9 +162,67 @@
       handDetected = true;
       
       try {
-        // Dessiner la main détectée
-        drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
-        drawLandmarks(octx, currentLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+        // Dessiner la main détectée (version standard)
+        drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        
+        // Dessiner les nœuds avec une visualisation personnalisée
+        // Points clés (ceux qui sont analysés) en surbrillance
+        const keyPoints = [0, 4, 5, 8, 9, 12, 13, 16, 17, 20];
+        
+        currentLandmarks.forEach((landmark, idx) => {
+          const x = landmark.x * overlay.width;
+          const y = landmark.y * overlay.height;
+          
+          if (keyPoints.includes(idx)) {
+            // Nœuds clés avec étiquette
+            let nodeName = "";
+            if (idx === 0) nodeName = "Poignet";
+            else if (idx === 4) nodeName = "Pouce";
+            else if (idx === 8) nodeName = "Index";
+            else if (idx === 12) nodeName = "Majeur";
+            else if (idx === 16) nodeName = "Annulaire";
+            else if (idx === 20) nodeName = "Auriculaire";
+            else if (idx === 5) nodeName = "Base I";
+            else if (idx === 9) nodeName = "Base M";
+            else if (idx === 13) nodeName = "Base A";
+            else if (idx === 17) nodeName = "Base Au";
+            
+            // Cercle extérieur de mise en évidence
+            octx.beginPath();
+            octx.arc(x, y, 12, 0, 2 * Math.PI);
+            octx.fillStyle = 'rgba(255, 100, 0, 0.3)';
+            octx.fill();
+            
+            // Point central
+            octx.beginPath();
+            octx.arc(x, y, 6, 0, 2 * Math.PI);
+            octx.fillStyle = 'rgba(255, 50, 0, 0.8)';
+            octx.fill();
+            
+            // Étiquette du nœud
+            if (nodeName) {
+              octx.font = '12px Arial';
+              octx.fillStyle = 'white';
+              octx.textAlign = 'center';
+              octx.strokeStyle = 'black';
+              octx.lineWidth = 3;
+              octx.strokeText(nodeName, x, y - 15);
+              octx.fillText(nodeName, x, y - 15);
+            }
+            
+            // Numéro du point pour référence (optionnel)
+            octx.font = '10px Arial';
+            octx.fillStyle = 'white';
+            octx.textAlign = 'center';
+            octx.fillText(idx.toString(), x, y + 4);
+          } else {
+            // Autres nœuds (non analysés)
+            octx.beginPath();
+            octx.arc(x, y, 3, 0, 2 * Math.PI);
+            octx.fillStyle = 'rgba(0, 255, 0, 0.5)';
+            octx.fill();
+          }
+        });
       } catch (e) {
         console.error("Erreur lors du dessin de la main:", e);
       }
@@ -240,12 +298,35 @@
   }
 
   // ---------- 2. Aide visuelle ----------
+  // Fonction modifiée pour dessiner un cercle circonscrit au cadre
   function drawGuide() {
     const { width, height } = overlay;
-    octx.strokeStyle = '#0c0';
+    
+    // Dessiner un cercle circonscrit (qui touche les bords du cadre)
+    const radius = Math.min(width, height) / 2 - 2; // -2 pour assurer une petite marge
+    const centerX = width / 2;
+    const centerY = height / 2;
+    
+    // Cercle extérieur
+    octx.strokeStyle = '#0c0'; // Vert
     octx.lineWidth = 4;
     octx.beginPath();
-    octx.arc(width / 2, height / 2, Math.min(width, height) * 0.45, 0, 2 * Math.PI);
+    octx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    octx.stroke();
+    
+    // Lignes repères (en option)
+    octx.strokeStyle = 'rgba(0, 204, 0, 0.3)';
+    octx.lineWidth = 1;
+    octx.beginPath();
+    
+    // Ligne horizontale
+    octx.moveTo(centerX - radius, centerY);
+    octx.lineTo(centerX + radius, centerY);
+    
+    // Ligne verticale
+    octx.moveTo(centerX, centerY - radius);
+    octx.lineTo(centerX, centerY + radius);
+    
     octx.stroke();
   }
 
@@ -572,6 +653,117 @@
     // Points des doigts (4, 8, 12, 16, 20) et articulations principales (5, 9, 13, 17)
     const keyPoints = [0, 4, 5, 8, 9, 12, 13, 16, 17, 20];
     
+    // ===== AJOUT: Création du graphique de somme des PSD =====
+    // Préparation des données pour la somme des PSD
+    const aggregatedData = {
+      freqs: [],
+      psd: []
+    };
+
+    // Première passe: collecter toutes les fréquences uniques
+    const allFreqs = new Set();
+    keyPoints.forEach((pointIdx) => {
+      if (v2Series[pointIdx] && v2Series[pointIdx].length >= 32) {
+        const cleaned = detrend(v2Series[pointIdx]);
+        const { freqs } = welchPSD(cleaned, fs);
+        freqs.forEach(f => allFreqs.add(f));
+      }
+    });
+
+    // Convertir en tableau trié
+    aggregatedData.freqs = Array.from(allFreqs).sort((a, b) => a - b);
+    aggregatedData.psd = new Array(aggregatedData.freqs.length).fill(0);
+
+    // Deuxième passe: sommer les PSD
+    keyPoints.forEach((pointIdx) => {
+      if (v2Series[pointIdx] && v2Series[pointIdx].length >= 32) {
+        const cleaned = detrend(v2Series[pointIdx]);
+        const { freqs, psd } = welchPSD(cleaned, fs);
+        
+        // Pour chaque fréquence du spectre agrégé
+        aggregatedData.freqs.forEach((freq, i) => {
+          // Trouver l'index le plus proche dans le spectre du point actuel
+          const closestIdx = freqs.reduce((closest, f, idx) => {
+            return Math.abs(f - freq) < Math.abs(freqs[closest] - freq) ? idx : closest;
+          }, 0);
+          
+          // Additionner la valeur PSD
+          aggregatedData.psd[i] += psd[closestIdx];
+        });
+      }
+    });
+
+    // Filtrer pour la bande d'intérêt et dessiner le graphique de somme
+    if (aggregatedData.freqs.length > 0) {
+      // Filtrer pour la bande d'intérêt MIN_HZ à MAX_HZ
+      const filteredData = aggregatedData.freqs.map((f, i) => ({ 
+        f, 
+        m: aggregatedData.psd[i] 
+      })).filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
+      
+      // Trouver le pic principal
+      if (filteredData.length > 0) {
+        const peak = filteredData.reduce((a, b) => (b.m > a.m ? b : a), { f: 0, m: 0 });
+        
+        console.log(`Somme des PSD: pic principal à ${peak.f.toFixed(2)} Hz avec amplitude ${peak.m.toFixed(4)}`);
+        
+        // Créer le graphique de la somme (pleine largeur)
+        const sumChartDiv = document.createElement('div');
+        sumChartDiv.style.gridColumn = '1 / -1';
+        sumChartDiv.style.marginBottom = '20px';
+        
+        const sumCanvas = document.createElement('canvas');
+        sumCanvas.className = 'chart sumChart';
+        sumChartDiv.appendChild(sumCanvas);
+        chartsDiv.appendChild(sumChartDiv);
+        
+        new Chart(sumCanvas, {
+          type: 'line',
+          data: { 
+            labels: filteredData.map(p => p.f.toFixed(1)), 
+            datasets: [{ 
+              label: 'Somme des PSD (tous points clés)', 
+              data: filteredData.map(p => p.m), 
+              borderColor: '#ff5500',
+              backgroundColor: 'rgba(255, 85, 0, 0.15)',
+              borderWidth: 3,
+              pointRadius: 0,
+              tension: 0.3,
+              fill: true
+            }] 
+          },
+          options: { 
+            scales: { 
+              x: { 
+                title: { display: true, text: 'Fréquence (Hz)' },
+                ticks: { maxTicksLimit: 10 }
+              }, 
+              y: { 
+                beginAtZero: true,
+                title: { display: true, text: 'Amplitude cumulée' }
+              } 
+            },
+            plugins: { 
+              legend: { display: true, position: 'top' },
+              title: {
+                display: true,
+                text: `Analyse spectrale globale - Pic principal: ${peak.f.toFixed(2)} Hz`,
+                font: { size: 16 }
+              },
+              tooltip: {
+                callbacks: {
+                  title: (items) => `${items[0].label} Hz`,
+                  label: (item) => `Amplitude: ${item.raw.toFixed(5)}`
+                }
+              }
+            },
+            animation: { duration: 500 }
+          }
+        });
+      }
+    }
+    // ===== FIN AJOUT =====
+    
     keyPoints.forEach((pointIdx, idx) => {
       if (!v2Series[pointIdx] || v2Series[pointIdx].length < 32) {
         console.warn(`Série ${pointIdx} trop courte ou manquante (${v2Series[pointIdx]?.length || 0} échantillons)`);
@@ -635,11 +827,8 @@
     } else {
       summaryP.textContent = "Aucune fréquence dominante détectée. Veuillez réessayer en gardant la main plus stable dans le cercle.";
       resultsSec.hidden = false;
-      // Modifier la fonction analyse() pour intégrer la visualisation
-      // Ajouter ce code juste après cette ligne :
-      // resultsSec.hidden = false;
       
-      // Ajouter cette ligne après "resultsSec.hidden = false;"
+      // Modifier la fonction analyse() pour intégrer la visualisation
       if (window.TremorViz && typeof window.TremorViz.displayResults === 'function') {
         window.TremorViz.displayResults(peakFreqs, peakAmps);
       }
