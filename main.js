@@ -441,192 +441,86 @@
     return { real, imag };
   }
 
-  // Détection des périodicités par autocorrélation
-  function autocorrelation(inputSignal, fs) {
-    const n = inputSignal.length;
-    const result = new Array(n);
-    
-    // Calcul de la moyenne
-    let mean = 0;
-    for (let i = 0; i < n; i++) {
-      mean += inputSignal[i];
-    }
-    mean /= n;
-    
-    // Normalisation
-    const normalizedSignal = new Array(n);
-    for (let i = 0; i < n; i++) {
-      normalizedSignal[i] = inputSignal[i] - mean;
-    }
-    
-    // Autocorrélation
-    for (let lag = 0; lag < n; lag++) {
-      let sum = 0;
-      let sumSquares1 = 0;
-      let sumSquares2 = 0;
-      
-      for (let i = 0; i < n - lag; i++) {
-        const x1 = normalizedSignal[i];
-        const x2 = normalizedSignal[i + lag];
-        
-        sum += x1 * x2;
-        sumSquares1 += x1 * x1;
-        sumSquares2 += x2 * x2;
-      }
-      
-      result[lag] = sum / Math.sqrt(sumSquares1 * sumSquares2 + 1e-10);
-    }
-    
-    // Recherche des pics (périodes)
-    const peaks = [];
-    const minLag = Math.max(5, Math.floor(fs / MAX_HZ));
-    const maxLag = Math.min(n / 2, Math.floor(fs / MIN_HZ));
-    
-    for (let i = minLag; i < maxLag; i++) {
-      if (result[i] > result[i - 1] && result[i] > result[i + 1]) {
-        peaks.push({
-          lag: i,
-          value: result[i],
-          frequency: fs / i
-        });
-      }
-    }
-    
-    // Trier par magnitude décroissante
-    peaks.sort((a, b) => b.value - a.value);
-    
-    return {
-      correlations: result,
-      peaks: peaks.slice(0, 5) // Garder les 5 meilleurs pics
-    };
-  }
-
-  // Méthode hybride qui essaie plusieurs approches
+  // Fonction de calcul de la PSD par la méthode de Welch (basée sur FFT)
   function welchPSD(series, fs) {
-    console.log("Démarrage analyse fréquentielle");
+    console.log("Démarrage analyse fréquentielle par FFT");
     const N = series.length;
     
-    // On va essayer une approche d'autocorrélation d'abord
-    // C'est souvent plus robuste pour les données bruitées
-    try {
-      console.log("Analyse par autocorrélation (robuste pour les tremblements)");
-      const autoResult = autocorrelation(series, fs);
-      
-      if (autoResult.peaks.length > 0) {
-        // Créer un spectre synthétique à partir des pics détectés
-        const syntheticSpectrum = [];
-        const frequencyStep = fs / 512;
-        
-        for (let f = 0; f <= fs/2; f += frequencyStep) {
-          let power = 0;
-          
-          // Ajouter la contribution de chaque pic
-          autoResult.peaks.forEach(peak => {
-            // Créer une gaussienne autour de chaque pic
-            const sigma = 0.1 * peak.frequency;
-            const distance = Math.abs(f - peak.frequency);
-            power += peak.value * Math.exp(-(distance * distance) / (2 * sigma * sigma));
-          });
-          
-          syntheticSpectrum.push({ f, m: power });
-        }
-        
-        // Filtrer pour ne garder que la bande d'intérêt
-        const filteredSpectrum = syntheticSpectrum.filter(p => 
-          p.f >= MIN_HZ && p.f <= MAX_HZ);
-        
-        console.log("Analyse par autocorrélation réussie");
-        return { 
-          freqs: filteredSpectrum.map(p => p.f),
-          psd: filteredSpectrum.map(p => p.m)
-        };
-      }
-    } catch (e) {
-      console.warn("Erreur lors de l'analyse par autocorrélation:", e);
+    // Paramètres pour la méthode de Welch
+    const segLen = Math.min(256, 1 << Math.floor(Math.log2(N)));
+    if (segLen < 32) {
+      console.warn("Signal trop court pour analyse spectrale");
+      return { freqs: [], psd: [] }; 
     }
     
-    // Si l'autocorrélation échoue, on essaie notre propre FFT
-    try {
-      console.log("Analyse par FFT personnalisée");
-      const segLen = Math.min(256, 1 << Math.floor(Math.log2(N)));
-      if (segLen < 32) return { freqs: [], psd: [] }; // trop court
-      
-      const step = Math.floor(segLen / 2);
-      
-      // Fenêtre de Hann
-      const hann = new Float32Array(segLen);
+    // 50% de chevauchement entre segments
+    const step = Math.floor(segLen / 2);
+    
+    // Fenêtre de Hann pour réduire les fuites spectrales
+    const hann = new Float32Array(segLen);
+    for (let i = 0; i < segLen; i++) {
+      hann[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (segLen - 1)));
+    }
+    
+    // Accumulateur pour moyenner les spectres
+    const psdAccu = new Float32Array(Math.floor(segLen / 2) + 1).fill(0);
+    let segments = 0;
+    
+    // Traiter chaque segment avec chevauchement
+    for (let start = 0; start + segLen <= N; start += step) {
+      // Appliquer la fenêtre au segment
+      const segment = new Float32Array(segLen);
       for (let i = 0; i < segLen; i++) {
-        hann[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (segLen - 1)));
+        segment[i] = series[start + i] * hann[i];
       }
       
-      const psdAccu = new Float32Array(Math.floor(segLen / 2) + 1).fill(0);
-      let segments = 0;
+      // Préparer pour la FFT
+      const inputReal = new Float32Array(segment);
+      const inputImag = new Float32Array(segLen).fill(0);
       
-      for (let start = 0; start + segLen <= N; start += step) {
-        // Préparer le segment avec la fenêtre
-        const segment = new Float32Array(segLen);
-        for (let i = 0; i < segLen; i++) {
-          segment[i] = series[start + i] * hann[i];
-        }
-        
-        // Parties réelle et imaginaire pour la FFT
-        const inputReal = new Float32Array(segment);
-        const inputImag = new Float32Array(segLen).fill(0);
-        
-        // Exécuter notre propre FFT
-        let result;
-        try {
-          // D'abord essayer la FFT rapide
-          result = fft(inputReal, inputImag);
-        } catch (e) {
-          // Si ça échoue, utiliser la DFT plus lente mais plus robuste
-          result = dft(segment);
-        }
-        
-        // Calculer le spectre de puissance
-        for (let k = 0; k <= segLen / 2; k++) {
-          const re = result.real[k];
-          const im = result.imag[k];
-          psdAccu[k] += (re * re + im * im) / segLen;
-        }
-        
-        segments++;
+      // Calculer la FFT
+      let result;
+      try {
+        result = fft(inputReal, inputImag);
+      } catch (e) {
+        console.warn("FFT rapide a échoué, utilisation de la DFT", e);
+        result = dft(segment);
       }
       
-      // Moyenne des spectres de puissance
-      const psd = Array.from(psdAccu, v => v / segments);
+      // Calculer le spectre de puissance (|X(f)|²)
+      for (let k = 0; k <= segLen / 2; k++) {
+        const re = result.real[k];
+        const im = result.imag[k];
+        // Le carré du module est toujours positif ou nul par définition
+        psdAccu[k] += (re * re + im * im) / segLen;
+      }
       
-      // Générer les fréquences correspondantes
-      const hzPerBin = fs / segLen;
-      const freqs = psd.map((_, k) => k * hzPerBin);
-      
-      // Créer des points {f, m} et filtrer pour la bande d'intérêt
-      const points = freqs.map((f, i) => ({ f, m: psd[i] }))
-                         .filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
-      
-      console.log("Analyse FFT réussie");
-      return { 
-        freqs: points.map(p => p.f),
-        psd: points.map(p => p.m)
-      };
-    } catch (e) {
-      console.error("Erreur FFT personnalisée:", e);
+      segments++;
     }
     
-    // Si tout échoue, créer un spectre synthétique avec un pic à 5Hz
-    console.warn("Toutes les méthodes d'analyse ont échoué, création d'un spectre synthétique");
-    const syntheticFreqs = [];
-    const syntheticPsd = [];
-    
-    // Générer un spectre synthétique simple
-    for (let f = MIN_HZ; f <= MAX_HZ; f += 0.1) {
-      syntheticFreqs.push(f);
-      // Un pic artificiel à 5Hz
-      const power = Math.exp(-Math.pow((f - 5) / 1, 2));
-      syntheticPsd.push(power);
+    // Si aucun segment n'a pu être traité
+    if (segments === 0) {
+      console.warn("Aucun segment n'a pu être analysé");
+      return { freqs: [], psd: [] };
     }
     
-    return { freqs: syntheticFreqs, psd: syntheticPsd };
+    // Moyenner les spectres de puissance
+    const psd = Array.from(psdAccu, v => v / segments);
+    
+    // Générer les fréquences correspondantes
+    const hzPerBin = fs / segLen;
+    const freqs = psd.map((_, k) => k * hzPerBin);
+    
+    // Créer des points {f, m} et filtrer pour la bande d'intérêt
+    const points = freqs.map((f, i) => ({ f, m: psd[i] }))
+                       .filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
+    
+    console.log("Analyse FFT réussie:", points.length, "points dans la bande d'intérêt");
+    
+    return { 
+      freqs: points.map(p => p.f),
+      psd: points.map(p => p.m)
+    };
   }
 
   // ---------- 5. Analyse ----------
@@ -688,7 +582,7 @@
           }, 0);
           
           // Additionner la valeur PSD
-          aggregatedData.psd[i] += psd[closestIdx];
+          aggregatedData.psd[i] += psd[closestIdx]; // Valeurs déjà positives grâce à la FFT
         });
       }
     });
@@ -698,7 +592,7 @@
       // Filtrer pour la bande d'intérêt MIN_HZ à MAX_HZ
       const filteredData = aggregatedData.freqs.map((f, i) => ({ 
         f, 
-        m: aggregatedData.psd[i] 
+        m: aggregatedData.psd[i]
       })).filter(p => p.f >= MIN_HZ && p.f <= MAX_HZ);
       
       // Trouver le pic principal
@@ -740,6 +634,7 @@
               }, 
               y: { 
                 beginAtZero: true,
+                min: 0, // Garantir que l'axe commence à 0
                 title: { display: true, text: 'Amplitude cumulée' }
               } 
             },
@@ -863,7 +758,10 @@
             title: { display: true, text: 'Hz' },
             ticks: { maxTicksLimit: 10 }
           }, 
-          y: { beginAtZero: true } 
+          y: { 
+            beginAtZero: true,
+            min: 0, // Garantir que l'axe commence à 0
+          } 
         },
         plugins: { 
           legend: { display: true, position: 'top' },
