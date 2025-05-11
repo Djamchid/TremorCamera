@@ -19,6 +19,7 @@
 
   // === Buffers ===
   let recording = false;
+  let waitingForHand = false;  // Nouvel état pour attendre la détection d'une main
   let v2Series  = [];     // [[v²_t] pour chaque nœud]
   let timeStamps = [];
   let lastPos    = Array(NODE_COUNT).fill(null);
@@ -102,19 +103,30 @@
       drawConnectors(octx, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
       drawLandmarks(octx, currentLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
       
+      // Si nous sommes en attente d'une main, commencer l'enregistrement
+      if (waitingForHand && !recording) {
+        console.log("Main détectée, démarrage de l'enregistrement");
+        waitingForHand = false;
+        startRecording();
+      }
       // Si l'enregistrement est en cours, traiter les données
-      if (recording) {
+      else if (recording) {
         processHandData();
-      } else if (startBtn.disabled) {
-        // Si le bouton est désactivé mais qu'on n'enregistre pas, l'activer
-        startBtn.disabled = false;
       }
     } else {
+      // Main non détectée
       currentLandmarks = null;
       handDetected = false;
       
+      // Si nous étions en train d'enregistrer et que la main disparaît
       if (recording) {
         statusP.textContent = 'Main non détectée! Replacez votre main dans le cercle';
+        // Option: pauser l'enregistrement jusqu'à ce que la main soit à nouveau visible
+        // (non implémenté ici pour simplicité)
+      }
+      // Si nous attendons une main
+      else if (waitingForHand) {
+        statusP.textContent = 'En attente de la détection d'une main...';
       }
     }
   }
@@ -186,6 +198,7 @@
   function stopRecording() {
     console.log("Arrêt de l'enregistrement...");
     recording = false;
+    waitingForHand = false;
     statusP.textContent = 'Analyse des données...';
     
     // Lancer l'analyse après un court délai pour permettre à l'interface de se mettre à jour
@@ -615,21 +628,36 @@
   startBtn.addEventListener('click', () => {
     console.log("Bouton démarrer cliqué");
     
-    // Ne vérifier l'existence de la main que si c'est la première fois
-    if (!handDetected && !currentLandmarks) {
-      console.log("Aucune main détectée");
-      statusP.textContent = 'Aucune main détectée. Placez votre main dans le cercle.';
-      return;
-    }
+    // Passer en mode "attente d'une main"
+    waitingForHand = true;
+    startBtn.disabled = true;
+    resultsSec.hidden = true;
     
-    startBtn.disabled = true; 
-    resultsSec.hidden = true; 
-    startRecording();
+    // Vérifier si une main est déjà détectée
+    if (handDetected && currentLandmarks) {
+      console.log("Main déjà détectée, démarrage immédiat de l'enregistrement");
+      waitingForHand = false;
+      startRecording();
+    } else {
+      // Sinon, attendre qu'une main soit détectée
+      statusP.textContent = 'En attente de la détection d'une main...';
+      console.log("En attente de la détection d'une main");
+      
+      // Option: ajouter un délai maximal d'attente
+      // setTimeout(() => {
+      //   if (waitingForHand) {
+      //     waitingForHand = false;
+      //     startBtn.disabled = false;
+      //     statusP.textContent = 'Délai d\'attente dépassé. Réessayez.';
+      //   }
+      // }, 10000);
+    }
   });
   
   restartBtn.addEventListener('click', () => {
     console.log("Bouton redémarrer cliqué");
-    startBtn.disabled = false; 
+    startBtn.disabled = false;
+    waitingForHand = false;
     resultsSec.hidden = true; 
     statusP.textContent = 'Prêt ! Placez votre main dans le cercle.';
   });
