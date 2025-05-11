@@ -163,10 +163,7 @@
   function exportCSV (freqs, amps) {
     const ts = new Date().toISOString();
     const lines = freqs.map((f, i) => `${ts},${f},${amps[i]}`);
-    const csv = 'timestamp,frequency,amplitude
-' + lines.join('
-') + '
-';
+    const csv = 'timestamp,frequency,amplitude\\n' + lines.join('\\n') + '\\n';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
     a.href = url; a.download = `tremor_${ts}.csv`; a.click();
